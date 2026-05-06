@@ -4,7 +4,6 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <limits>
 
 constexpr float LearningRate = 0.1f;
 constexpr size_t NumEpochs = 1000;
@@ -82,16 +81,14 @@ int main() {
         auto RawOut = Net.GetOutput();
         
         // Manual softmax for display
-        float Max = -std::numeric_limits<float>::infinity();
-        float Sum = 0;
+        float Max = -1e9, Sum = 0;
         for(float v : RawOut) if(v > Max) Max = v;
-
-        std::vector<float> Soft(RawOut.size());
-        for(size_t i=0; i < RawOut.size(); ++i) { Soft[i] = std::exp(RawOut[i] - Max); Sum += Soft[i]; }
+        std::vector<float> Soft(3);
+        for(int i=0; i<3; ++i) { Soft[i] = std::exp(RawOut[i] - Max); Sum += Soft[i]; }
 
         int PredClass = 0;
         float BestProb = 0;
-        for(size_t i=0; i < Soft.size(); ++i) {
+        for(int i=0; i<3; ++i) {
             Soft[i] /= Sum;
             if(Soft[i] > BestProb) { BestProb = Soft[i]; PredClass = i; }
         }
