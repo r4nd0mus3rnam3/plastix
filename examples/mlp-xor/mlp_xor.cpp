@@ -7,6 +7,10 @@
 constexpr float LearningRate = 0.5f;
 constexpr size_t NumEpochs = 5000;
 
+constexpr size_t NumInputs = 3; // x1, x2, bias
+constexpr size_t HiddenSize = 4;
+constexpr size_t OutputLayerStartId = NumInputs + HiddenSize;
+
 // Per-unit pre-activation gradient dL/dz, persisted across the backward
 // pass so each level can read its successors' values. The framework's
 // BackwardAcc is reset to zero after every per-level Apply, so we cannot
@@ -50,7 +54,13 @@ struct SigmoidBackwardPass {
 struct GradientDescentConn {
   static void UpdateIncomingConnection(auto &U, size_t DstId, size_t SrcId,
                                        auto &C, size_t ConnId, auto &) {
-    float Grad = plastix::GetField<GradPreActTag>(U, DstId);
+    float Grad;
+    if (DstId >= OutputLayerStartId) { // Output layer
+      // For output layer, dL/dz is in BackwardAcc (set by MSELoss)
+      Grad = plastix::GetBackwardAcc(U, DstId);
+    } else { // Hidden layer
+      Grad = plastix::GetField<GradPreActTag>(U, DstId); // dL/dz for hidden layer (from SigmoidBackwardPass)
+    }
     float Input = plastix::GetActivation(U, SrcId);
     plastix::GetWeight(C, ConnId) -= LearningRate * Grad * Input;
   }
