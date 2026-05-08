@@ -120,13 +120,11 @@ public:
               UAcc, FP::Map(UnitAlloc, ToId, FromId, ConnAlloc, C, Globals));
         }
 
-        size_t NumUnits = UnitAlloc.Size();
-        for (size_t I = NumInput; I < NumUnits; ++I) {
-          if (GetLevel(UnitAlloc, I) == L) {
-            auto &UAcc = GetForwardAcc(UnitAlloc, I);
-            FP::Apply(UnitAlloc, I, Globals, UAcc);
-            UAcc = Acc{};
-          }
+        for (uint32_t Ui = UnitRanges[L].Begin; Ui < UnitRanges[L].End; ++Ui) {
+          uint32_t I = SortedUnits[Ui];
+          auto &UAcc = GetForwardAcc(UnitAlloc, I);
+          FP::Apply(UnitAlloc, I, Globals, UAcc);
+          UAcc = Acc{};
         }
       }
     } else {
@@ -180,13 +178,11 @@ public:
                 UAcc, BP::Map(UnitAlloc, FromId, ToId, ConnAlloc, C, Globals));
           }
 
-          size_t NumUnits = UnitAlloc.Size();
-          for (size_t I = NumInput; I < NumUnits; ++I) {
-            if (GetLevel(UnitAlloc, I) == L) {
-              auto &UAcc = GetBackwardAcc(UnitAlloc, I);
-              BP::Apply(UnitAlloc, I, Globals, UAcc);
-              UAcc = Acc{};
-            }
+          for (uint32_t Ui = UnitRanges[L].Begin; Ui < UnitRanges[L].End; ++Ui) {
+            uint32_t I = SortedUnits[Ui];
+            auto &UAcc = GetBackwardAcc(UnitAlloc, I);
+            BP::Apply(UnitAlloc, I, Globals, UAcc);
+            UAcc = Acc{};
           }
         }
       } else {
@@ -313,6 +309,7 @@ public:
           auto NewId = UnitAlloc.Allocate();
           GetLevel(UnitAlloc, NewId) = static_cast<uint16_t>(NewLevel);
           AP::InitUnit(UnitAlloc, NewId, I, Globals);
+          NeedsResort = true;
         }
       }
     }
@@ -539,6 +536,28 @@ private:
   void SortConnectionsByLevel() {
     RecomputeLevels();
 
+    size_t NumUnits = UnitAlloc.Size();
+    SortedUnits.resize(NumUnits);
+    uint32_t UnitHistogram[MaxLevels] = {};
+    for (size_t I = 0; I < NumUnits; ++I)
+      ++UnitHistogram[GetLevel(UnitAlloc, I)];
+
+    uint32_t UOffset = 0;
+    for (uint32_t L = 0; L < MaxLevels; ++L) {
+      UnitRanges[L].Begin = UOffset;
+      UOffset += UnitHistogram[L];
+      UnitRanges[L].End = UOffset;
+    }
+
+    uint32_t UWritePos[MaxLevels];
+    for (uint32_t L = 0; L < MaxLevels; ++L)
+      UWritePos[L] = UnitRanges[L].Begin;
+
+    for (size_t I = 0; I < NumUnits; ++I) {
+      uint16_t Lvl = GetLevel(UnitAlloc, I);
+      SortedUnits[UWritePos[Lvl]++] = static_cast<uint32_t>(I);
+    }
+
     size_t N = ConnAlloc.Size();
     if (N == 0) {
       NumLevels = 0;
@@ -585,6 +604,8 @@ private:
   ConnAllocator ConnAlloc;
   GlobalState Globals;
   std::array<LevelRange, MaxLevels> Ranges{};
+  std::array<LevelRange, MaxLevels> UnitRanges{};
+  std::vector<uint32_t> SortedUnits;
   uint16_t NumLevels = 0;
   bool NeedsResort = false;
   KahnScratchAllocator KahnAlloc;
