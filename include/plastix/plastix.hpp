@@ -89,8 +89,11 @@ public:
     UnitRange Prev{0, InputDim};
     ((Prev = Layers(UnitAlloc, ConnAlloc, Prev)), ...);
     OutputRange = Prev;
-    if constexpr (Traits::Model == Propagation::Topological)
+    if constexpr (Traits::Model == Propagation::Topological) {
       SortConnectionsByLevel();
+    } else {
+      CompactConnections();
+    }
   }
 
   Network(size_t InputDim, size_t OutputDim = 1)
@@ -105,14 +108,16 @@ public:
     for (size_t I = 0; I < NumInput; ++I)
       GetActivation(UnitAlloc, I) = Inputs[I];
 
-    if constexpr (Traits::Model == Propagation::Topological) {
-      if (NeedsResort)
+    if (NeedsResort) {
+      if constexpr (Traits::Model == Propagation::Topological)
         SortConnectionsByLevel();
+      else
+        CompactConnections();
+    }
 
+    if constexpr (Traits::Model == Propagation::Topological) {
       for (uint16_t L = 1; L <= NumLevels; ++L) {
         for (uint32_t C = Ranges[L - 1].Begin; C < Ranges[L - 1].End; ++C) {
-          if (GetField<DeadTag>(ConnAlloc, C))
-            continue;
           auto ToId = GetField<ToIdTag>(ConnAlloc, C);
           auto FromId = GetField<FromIdTag>(ConnAlloc, C);
           auto &UAcc = GetForwardAcc(UnitAlloc, ToId);
@@ -129,8 +134,6 @@ public:
       }
     } else {
       for (size_t C = 0; C < ConnAlloc.Size(); ++C) {
-        if (GetField<DeadTag>(ConnAlloc, C))
-          continue;
         auto ToId = GetField<ToIdTag>(ConnAlloc, C);
         auto FromId = GetField<FromIdTag>(ConnAlloc, C);
         auto &UAcc = GetForwardAcc(UnitAlloc, ToId);
@@ -169,8 +172,6 @@ public:
       if constexpr (Traits::Model == Propagation::Topological) {
         for (uint16_t L = NumLevels; L >= 1; --L) {
           for (uint32_t C = Ranges[L].Begin; C < Ranges[L].End; ++C) {
-            if (GetField<DeadTag>(ConnAlloc, C))
-              continue;
             auto ToId = GetField<ToIdTag>(ConnAlloc, C);
             auto FromId = GetField<FromIdTag>(ConnAlloc, C);
             auto &UAcc = GetBackwardAcc(UnitAlloc, FromId);
@@ -187,8 +188,6 @@ public:
         }
       } else {
         for (size_t C = ConnAlloc.Size(); C-- > 0;) {
-          if (GetField<DeadTag>(ConnAlloc, C))
-            continue;
           auto ToId = GetField<ToIdTag>(ConnAlloc, C);
           auto FromId = GetField<FromIdTag>(ConnAlloc, C);
           auto &UAcc = GetBackwardAcc(UnitAlloc, FromId);
@@ -232,8 +231,6 @@ public:
       using UP = typename Traits::UpdateConn;
 
       for (size_t C = 0; C < ConnAlloc.Size(); ++C) {
-        if (GetField<DeadTag>(ConnAlloc, C))
-          continue;
         auto ToId = GetField<ToIdTag>(ConnAlloc, C);
         auto FromId = GetField<FromIdTag>(ConnAlloc, C);
         UP::UpdateIncomingConnection(UnitAlloc, ToId, FromId, ConnAlloc, C,
@@ -241,8 +238,6 @@ public:
       }
 
       for (size_t C = 0; C < ConnAlloc.Size(); ++C) {
-        if (GetField<DeadTag>(ConnAlloc, C))
-          continue;
         auto ToId = GetField<ToIdTag>(ConnAlloc, C);
         auto FromId = GetField<FromIdTag>(ConnAlloc, C);
         UP::UpdateOutgoingConnection(UnitAlloc, FromId, ToId, ConnAlloc, C,
@@ -288,8 +283,10 @@ public:
             Remove =
                 CP::ShouldPrune(UnitAlloc, ToId, FromId, ConnAlloc, C, Globals);
 
-        if (Remove)
+        if (Remove) {
           GetField<DeadTag>(ConnAlloc, C) = true;
+          NeedsResort = true;
+        }
       }
     }
   }
@@ -444,10 +441,6 @@ public:
     DoPruneConnections();
     DoAddUnits();
     DoAddConnections();
-    if constexpr (Traits::Model == Propagation::Topological) {
-      if (NeedsResort)
-        SortConnectionsByLevel();
-    }
     DoResetGlobalState();
   }
 
@@ -533,6 +526,19 @@ private:
     }
   }
 
+  void CompactConnections() {
+    size_t N = ConnAlloc.Size();
+    size_t *Perm = ConnAlloc.PermutationScratch();
+    size_t AliveCount = 0;
+    for (size_t I = 0; I < N; ++I) {
+      if (!GetField<DeadTag>(ConnAlloc, I))
+        Perm[AliveCount++] = I;
+    }
+    if (AliveCount < N)
+      ConnAlloc.Gather(AliveCount);
+    NeedsResort = false;
+  }
+
   void SortConnectionsByLevel() {
     RecomputeLevels();
 
@@ -564,14 +570,17 @@ private:
       return;
     }
 
-    for (size_t C = 0; C < N; ++C) {
-      auto From = GetField<FromIdTag>(ConnAlloc, C);
-      GetField<SrcLevelTag>(ConnAlloc, C) = GetLevel(UnitAlloc, From);
-    }
-
     uint32_t Histogram[MaxLevels] = {};
-    for (size_t C = 0; C < N; ++C)
-      ++Histogram[GetField<SrcLevelTag>(ConnAlloc, C)];
+    size_t AliveCount = 0;
+    for (size_t C = 0; C < N; ++C) {
+      if (GetField<DeadTag>(ConnAlloc, C))
+        continue;
+      auto From = GetField<FromIdTag>(ConnAlloc, C);
+      uint16_t Lvl = GetLevel(UnitAlloc, From);
+      GetField<SrcLevelTag>(ConnAlloc, C) = Lvl;
+      ++Histogram[Lvl];
+      ++AliveCount;
+    }
 
     uint32_t Offset = 0;
     NumLevels = 0;
@@ -589,11 +598,13 @@ private:
 
     size_t *Perm = ConnAlloc.PermutationScratch();
     for (size_t C = 0; C < N; ++C) {
+      if (GetField<DeadTag>(ConnAlloc, C))
+        continue;
       uint16_t Lvl = GetField<SrcLevelTag>(ConnAlloc, C);
       Perm[WritePos[Lvl]++] = C;
     }
 
-    ConnAlloc.Gather(N);
+    ConnAlloc.Gather(AliveCount);
     NeedsResort = false;
   }
 
